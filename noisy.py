@@ -6,6 +6,7 @@ import random
 import re
 import sys
 import time
+import configparser
 
 import requests
 from urllib3.exceptions import LocationParseError
@@ -27,7 +28,10 @@ class Crawler(object):
         """
         Initializes the Crawl class
         """
-        self._config = {}
+        self.config = None
+        self.root_urls = []
+        self.blacklisted_urls = []
+        self.user_agents = []
         self._links = []
         self._start_time = None
 
@@ -43,7 +47,7 @@ class Crawler(object):
         :param url: the url to visit
         :return: the response Requests object
         """
-        random_user_agent = random.choice(self._config["user_agents"])
+        random_user_agent = random.choice(self.user_agents)
         headers = {'user-agent': random_user_agent}
 
         response = requests.get(url, headers=headers, timeout=5)
@@ -102,7 +106,7 @@ class Crawler(object):
         :param url: full URL
         :return: boolean indicating whether a URL is blacklisted or not
         """
-        return any(blacklisted_url in url for blacklisted_url in self._config["blacklisted_urls"])
+        return any(blacklisted_url in url for blacklisted_url in self.blacklisted_urls)
 
     def _should_accept_url(self, url):
         """
@@ -134,7 +138,7 @@ class Crawler(object):
         and blacklists it so we don't visit it in the future
         :param link: link to remove and blacklist
         """
-        self._config['blacklisted_urls'].append(link)
+        self.blacklisted_urls.append(link)
         del self._links[self._links.index(link)]
 
     def _browse_from_links(self, depth=0):
@@ -145,7 +149,7 @@ class Crawler(object):
         a dead end has reached or when we ran out of links
         :param depth: our current link depth
         """
-        is_depth_reached = depth >= self._config['max_depth']
+        is_depth_reached = depth >= int(self.config['config']['max_depth'])
         if not len(self._links) or is_depth_reached:
             logging.debug("Hit a dead end, moving to the next root URL")
             # escape from the recursion, we don't have links to continue or we have reached the max depth
@@ -161,7 +165,7 @@ class Crawler(object):
             sub_links = self._extract_urls(sub_page, random_link)
 
             # sleep for a random amount of time
-            time.sleep(random.randrange(self._config["min_sleep"], self._config["max_sleep"]))
+            time.sleep(random.randrange(int(self.config['config']["min_sleep"]), int(self.config['config']["max_sleep"])))
 
             # make sure we have more than 1 link to pick from
             if len(sub_links) > 1:
@@ -178,29 +182,27 @@ class Crawler(object):
 
         self._browse_from_links(depth + 1)
 
-    def load_config_file(self, file_path):
+    def load_config_file(self):
         """
         Loads and decodes a JSON config file, sets the config of the crawler instance
         to the loaded one
-        :param file_path: path of the config file
         :return:
         """
-        with open(file_path, 'r') as config_file:
-            config = json.load(config_file)
-            self.set_config(config)
+        self.config = configparser.ConfigParser()
+        self.config.read("config.ini")
 
-    def set_config(self, config):
-        """
-        Sets the config of the crawler instance to the provided dict
-        :param config: dict of configuration options, for example:
-        {
-            "root_urls": [],
-            "blacklisted_urls": [],
-            "click_depth": 5
-            ...
-        }
-        """
-        self._config = config
+    # def set_config(self, config):
+    #     """
+    #     Sets the config of the crawler instance to the provided dict
+    #     :param config: dict of configuration options, for example:
+    #     {
+    #         "root_urls": [],
+    #         "blacklisted_urls": [],
+    #         "click_depth": 5
+    #         ...
+    #     }
+    #     """
+    #     self._config = config
 
     def set_option(self, option, value):
         """
@@ -208,7 +210,7 @@ class Crawler(object):
         :param option: the option key in the config, for example: "max_depth"
         :param value: value for the option
         """
-        self._config[option] = value
+        self.config["config"][option] = str(value)
 
     def _is_timeout_reached(self):
         """
@@ -216,11 +218,41 @@ class Crawler(object):
         is specified then return false
         :return: boolean indicating whether the timeout has reached
         """
-        is_timeout_set = self._config["timeout"] is not False  # False is set when no timeout is desired
-        end_time = self._start_time + datetime.timedelta(seconds=self._config["timeout"])
-        is_timed_out = datetime.datetime.now() >= end_time
+        timeout = self.config["config"]["timeout"]
 
-        return is_timeout_set and is_timed_out
+        if timeout.isnumeric():
+            end_time = self._start_time + datetime.timedelta(seconds=int(timeout))
+            return datetime.datetime.now() >= end_time
+        else:
+            return False  # No timeout desired
+
+
+    def parse_root_urls(self):
+        """
+        Parse root urls in to dictionary
+        :return:
+        """
+        with open(self.config["filepaths"]["root_urls"], encoding="UTF-8") as urls:  # путь в конфиг
+            self.root_urls = [line.strip() for line in urls]
+
+
+    def parse_blacklisted_urls(self):
+        """
+        Parse blacklisted urls in to dictionary
+        :return:
+        """
+        with open(self.config["filepaths"]["blacklisted_urls"], encoding="UTF-8") as urls:  # путь в конфиг
+            self.blacklisted_urls = [line.strip() for line in urls]
+
+
+    def parse_user_agents(self):
+        """
+        Parse user agents in to dictionary
+        :return:
+        """
+        with open(self.config["filepaths"]["user_agents"], encoding="UTF-8") as user_agent:  # путь в конфиг
+            self.user_agents = [line.strip() for line in user_agent]
+
 
     def crawl(self):
         """
@@ -230,30 +262,29 @@ class Crawler(object):
         self._start_time = datetime.datetime.now()
 
         while True:
-            url = random.choice(self._config["root_urls"])
+            url = random.choice(self.root_urls)
             try:
-                body = self._request(url).content
+                body = self._request(f"https://{url}").content
                 self._links = self._extract_urls(body, url)
                 logging.debug("found {} links".format(len(self._links)))
                 self._browse_from_links()
 
             except requests.exceptions.RequestException:
-                logging.warn("Error connecting to root url: {}".format(url))
+                logging.warning("Error connecting to root url: {}".format(url))
                 
             except MemoryError:
-                logging.warn("Error: content at url: {} is exhausting the memory".format(url))
+                logging.warning("Error: content at url: {} is exhausting the memory".format(url))
 
             except LocationParseError:
-                logging.warn("Error encountered during parsing of: {}".format(url))
+                logging.warning("Error encountered during parsing of: {}".format(url))
 
             except self.CrawlerTimedOut:
-                logging.info("Timeout has exceeded, exiting")
+                logging.warning("Timeout has exceeded, exiting")
                 return
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--log', metavar='-l', type=str, help='logging level', default='info')
-    parser.add_argument('--config', metavar='-c', required=True, type=str, help='config file')
     parser.add_argument('--timeout', metavar='-t', required=False, type=int,
                         help='for how long the crawler should be running, in seconds', default=False)
     args = parser.parse_args()
@@ -262,7 +293,10 @@ def main():
     logging.basicConfig(level=level)
 
     crawler = Crawler()
-    crawler.load_config_file(args.config)
+    crawler.load_config_file()
+    crawler.parse_blacklisted_urls()
+    crawler.parse_root_urls()
+    crawler.parse_user_agents()
 
     if args.timeout:
         crawler.set_option('timeout', args.timeout)

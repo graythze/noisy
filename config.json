@@ -1,7 +1,7 @@
 {
     "max_depth": 25,
-    "min_sleep": 3,
-    "max_sleep": 6,
+    "min_sleep": 1,
+    "max_sleep": 2,
     "timeout": false,
     "root_urls": [
         "http://4chan.org",
